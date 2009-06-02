@@ -66,6 +66,12 @@ module SimpleScenarios extend self
     [name, dependencies]
   end
   
+  module BaseScenario
+    def setup_scenario
+      # no op
+    end
+  end
+  
   class Scenario < Module
     attr_reader :scenarios, :name, :dependencies
     def initialize(scenarios, name, dependencies, &body_proc)
@@ -74,12 +80,13 @@ module SimpleScenarios extend self
       @dependencies  = dependencies
       @body_proc     = body_proc or raise "No body_proc!"
       
+      include BaseScenario
       each_dependency do |scenario|
         include scenario
       end
       
       define_method(:setup_scenario) do 
-        super rescue nil
+        super
         instance_eval(&body_proc)
       end
       
