@@ -13,7 +13,7 @@ module SimpleFixtures
   # A.define_fixture(:some_name, proc {|overrides|  {:a => 1}  })
   #
   def define_fixture(name = nil, attrs = nil, &blk)
-    if !name.is_a?(Symbol) # name and attrs could be nil, but blk != nil
+    if !name.is_a?(Symbol) and !name.is_a?(String) # name and attrs could be nil, but blk != nil
       attrs = name
       name  = :__default__
     end
@@ -49,8 +49,14 @@ module SimpleFixtures
   end
   
   def fixture!(*args, &blk)
+    # special case: only name is given - return an unique fixture
+    return unique_fixture!(args.first) if args.size == 1 and args.first.is_a?(Symbol) || args.first.is_a?(String)
+    
     instance = fixture(*args, &blk)
-    instance.save or raise "Could not save #{instance}! Errors: #{instance.errors.to_a.inspect}"
+    instance.save or begin
+      # stupid rake supresses StandardError, but fails on Exception. This is what we need here.
+                       raise Exception, "Could not save #{instance}!\n\nErrors: #{instance.errors.to_a.inspect}.\nArguments given: #{args.inspect}, instance: #{instance.inspect}"
+    end
     instance
   end
   
@@ -91,10 +97,13 @@ module SimpleFixtures
       end
     end
     def fixture_attributes(model, *args)
-      name = args.shift if args.first.is_a?(Symbol)
-      execute_merge(model, model.fixtures[:__default__],  # default fixture attributes
-      execute_merge(model, model.fixtures[name],          # named attributes override default fixture
-      execute_merge(model, args.shift || {}, args.shift || {}))).   # local attributes override named fixture
+      name = args.shift if args.first.is_a?(Symbol) || args.first.is_a?(String)
+      sc = model.superclass
+      base_fixtures = sc.respond_to?(:fixture_attributes) ? sc.fixture_attributes(name) : {}
+      execute_merge(model, base_fixtures,                 # first, use superclass fixture
+      execute_merge(model, model.fixtures[:__default__],  # then override with local class default fixture
+      execute_merge(model, model.fixtures[name],          # then override with named fixture
+      execute_merge(model, args.shift || {}, args.shift || {})))).  # then override with local attributes
       inject({}) do |h, (k,v)|
         h[k] = (v.respond_to?(:call)) ? v.call : v if v
         h
@@ -116,6 +125,10 @@ module SimpleFixtures
       Digest::SHA1.hexdigest("#{rand(2**160)}")
     end
 
+    def valid_email_fixture(prefix = "user", domain = "example.com")
+      "#{prefix}#{rand(2**64)}@#{domain}"
+    end
+
     # Generates exponentially distributed time values
     def random_fixture_datetime(range = 55, base = 1.5)
       offset = (base**(rand * range))
@@ -124,6 +137,38 @@ module SimpleFixtures
     end
   end
   include RandomFixtures
+  
+  module RSpec
+    # fixtures_spec.rb:
+    #   extend SimpleFixtures::RSpec
+    #   verify_default_fixtures!(
+    #     :models => [ Person, Project ],
+    #     :except => [ Merb::DataMapperSessionStore ]
+    #   )
+    def verify_default_fixtures!(opts = {})
+      fixtured_models = opts[:models] || [ ]
+      exceptions      = opts[:except] || opts [:exceptions] || [ ]
+      
+      fixtured_models.each do |model|
+        describe model, "default fixture" do
+          before(:all) do
+            @fixture = model.fixture!
+          end
+          it { @fixture.should be_valid }
+        end
+      end
+      
+      (DataMapper::Resource.descendants.to_a - fixtured_models - exceptions).each do |model|
+        describe model, "default fixture" do
+          it "should have valid default fixture" do
+            pending "add this class to a list of models with fixtures"
+          end
+        end
+      end
+      
+    end # verify_default_fixtures
+  end # RSpec
+  
 end # SimpleFixtures
 
-DataMapper::Model.send(:include, SimpleFixtures) if defined?(DataMapper)
+::DataMapper::Model.send(:include, SimpleFixtures) if defined?(::DataMapper)
